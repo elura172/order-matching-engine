@@ -1,6 +1,6 @@
 # High-Throughput Order Matching & Pre-Trade Risk Engine
 
-[![Test Suite](https://img.shields.io/badge/pytest-12%2F12%20passed-brightgreen.svg)]()
+[![Test Suite](https://img.shields.io/badge/pytest-19%2F19%20passed-brightgreen.svg)]()
 [![Evaluation Accuracy](https://img.shields.io/badge/eval%20accuracy-100%25%20(10%2F10)-blue.svg)]()
 [![Architecture](https://img.shields.io/badge/matching-L3%20Price--Time%20FIFO-orange.svg)]()
 [![Integrity](https://img.shields.io/badge/audit-SHA--256%20Cryptographic%20Root-purple.svg)]()
@@ -65,18 +65,19 @@ flowchart TD
 2. **Pre-Trade Risk Gateway:**
    - **Price Collar Protection:** Rejects fat-finger aggressive limit orders deviating by more than 5% from the Best Bid/Offer (BBO).
    - **Self-Trade Prevention (STP):** Intercepts and halts internal wash trades between identical trader accounts.
-   - **Max Notional Filter:** Rejects orders exceeding single-order capitalization thresholds ($1,000,000 / ¥150,000,000 cap).
+   - **Max Notional Filter:** Rejects orders exceeding the configured single-order cap ($1,000,000 by default). Market orders sum executable notional across opposing book depth and are rejected when no opposing liquidity exists.
+   - Rejects non-finite quantities and prices, symbol mismatches, duplicate order IDs, and conflicting reuse of a client order ID.
 
 3. **Advanced Order Types & Lifecycle:**
    - **Limit Orders (`LIMIT`):** Crosses matching passive liquidity; rests remainder on book.
    - **Market Orders (`MARKET`):** Aggressive liquidity taker that sweeps opposing price levels down the book.
    - **Immediate-or-Cancel (`IOC`):** Fills available resting shares and cancels unfilled residual without resting.
    - **Post-Only (`POST_ONLY`):** Maker-or-cancel; rejects immediately if the order would cross resting orders.
-   - **Atomic Cancel/Replace:** Atomically cancels an active resting order and submits a replacement at a new price level.
+   - **Cancel/Replace:** Submits a replacement after removing the original; if risk checks reject the replacement, the original is restored at its prior FIFO position.
 
 4. **Cryptographic Audit Ledger & Replay:**
    - Append-only event journal capturing order acceptances, cancellations, rejections, and trade fills.
-   - Rolling SHA-256 state root ensuring tamper-evident state verification and 100% deterministic replay.
+   - Rolling SHA-256 state root covers sequence, event type, timestamp, and canonical payload; verification also detects non-increasing sequences and truncated in-memory journals.
 
 ---
 
@@ -121,6 +122,6 @@ The engine features a built-in automated institutional trading benchmark coverin
 ---
 
 ## Author
-**Paul Trafford (`elura172`)**  
+**elura172**  
 *AI Systems & Distributed Infrastructure Engineer*  
-GitHub: [github.com/elura172](https://github.com/elura172) · LinkedIn: [linkedin.com/in/paul-trafford-352068434](https://www.linkedin.com/in/paul-trafford-352068434)
+GitHub: [github.com/elura172](https://github.com/elura172)

@@ -42,15 +42,12 @@ class AuditLedger:
     ) -> JournalEntry:
         """Append an event to the ledger and update the rolling cryptographic state hash."""
         ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
+        if sequence_num <= 0:
+            raise ValueError("sequence_num must be a positive integer")
+        if self.entries and sequence_num <= self.entries[-1].sequence_num:
+            raise ValueError("sequence_num must increase strictly across ledger entries")
         prev = self._current_hash
-
-        canonical_payload = json.dumps(payload, sort_keys=True, default=_json_serial)
-        hasher = hashlib.sha256()
-        hasher.update(prev.encode("utf-8"))
-        hasher.update(str(sequence_num).encode("utf-8"))
-        hasher.update(event_type.encode("utf-8"))
-        hasher.update(canonical_payload.encode("utf-8"))
-        state_hash = hasher.hexdigest()
+        state_hash = self._hash_entry(prev, sequence_num, event_type, ts, payload)
 
         entry = JournalEntry(
             sequence_num=sequence_num,
@@ -72,21 +69,33 @@ class AuditLedger:
     def verify_chain_integrity(self) -> bool:
         """Verify the full mathematical chain of hashes from genesis to latest state root."""
         expected_prev = self.GENESIS_HASH
+        previous_sequence = 0
         for entry in self.entries:
-            if entry.prev_hash != expected_prev:
+            if entry.prev_hash != expected_prev or entry.sequence_num <= previous_sequence:
                 return False
-
-            canonical_payload = json.dumps(entry.payload, sort_keys=True, default=_json_serial)
-            hasher = hashlib.sha256()
-            hasher.update(entry.prev_hash.encode("utf-8"))
-            hasher.update(str(entry.sequence_num).encode("utf-8"))
-            hasher.update(entry.event_type.encode("utf-8"))
-            hasher.update(canonical_payload.encode("utf-8"))
-            calculated_hash = hasher.hexdigest()
-
+            calculated_hash = self._hash_entry(
+                entry.prev_hash, entry.sequence_num, entry.event_type, entry.timestamp_ns, entry.payload
+            )
             if calculated_hash != entry.state_hash:
                 return False
-
             expected_prev = entry.state_hash
+            previous_sequence = entry.sequence_num
 
-        return True
+        return expected_prev == self._current_hash
+
+    @staticmethod
+    def _hash_entry(
+        prev_hash: str,
+        sequence_num: int,
+        event_type: str,
+        timestamp_ns: int,
+        payload: dict[str, Any],
+    ) -> str:
+        canonical_payload = json.dumps(payload, sort_keys=True, default=_json_serial)
+        hasher = hashlib.sha256()
+        hasher.update(prev_hash.encode("utf-8"))
+        hasher.update(str(sequence_num).encode("utf-8"))
+        hasher.update(event_type.encode("utf-8"))
+        hasher.update(str(timestamp_ns).encode("utf-8"))
+        hasher.update(canonical_payload.encode("utf-8"))
+        return hasher.hexdigest()

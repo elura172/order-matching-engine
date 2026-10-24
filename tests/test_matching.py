@@ -207,6 +207,45 @@ def test_cancel_replace_flow():
     assert engine.book.get_best_bid() == Decimal("92.00")
 
 
+def test_rejected_cancel_replace_restores_original_fifo_priority():
+    engine = MatchingEngine("BTC-USDT")
+    original = Order(
+        order_id="replace-first", client_order_id="replace-first-client", trader_id="maker",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("90"), quantity=Decimal("2"),
+    )
+    second = Order(
+        order_id="replace-second", client_order_id="replace-second-client", trader_id="maker-2",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("90"), quantity=Decimal("2"),
+    )
+    ask = Order(
+        order_id="replace-ask", client_order_id="replace-ask-client", trader_id="seller",
+        symbol="BTC-USDT", side=Side.SELL, order_type=OrderType.LIMIT,
+        price=Decimal("100"), quantity=Decimal("1"),
+    )
+    engine.submit_order(original)
+    engine.submit_order(second)
+    engine.submit_order(ask)
+
+    restored, replacement, _, decision = engine.cancel_replace(
+        "replace-first", Decimal("106"), Decimal("2"), "replace-rejected-client"
+    )
+    assert not decision.allowed
+    assert decision.code == "PRICE_COLLAR_EXCEEDED"
+    assert replacement.status == OrderStatus.REJECTED
+    assert restored.status == OrderStatus.NEW
+    assert engine.book.get_best_bid() == Decimal("90")
+
+    taker = Order(
+        order_id="priority-taker", client_order_id="priority-taker-client", trader_id="taker",
+        symbol="BTC-USDT", side=Side.SELL, order_type=OrderType.LIMIT,
+        price=Decimal("90"), quantity=Decimal("1"),
+    )
+    _, trades, _ = engine.submit_order(taker)
+    assert trades[0].maker_order_id == "replace-first"
+
+
 def test_self_trade_prevention_gate():
     engine = MatchingEngine("BTC-USDT")
     engine.submit_order(
@@ -307,6 +346,90 @@ def test_client_order_id_idempotency():
     assert d1.code == d2.code
 
 
+def test_reused_client_order_id_with_different_payload_is_rejected():
+    engine = MatchingEngine("BTC-USDT")
+    first = Order(
+        order_id="idem-a", client_order_id="same-client-id", trader_id="t1",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("50"), quantity=Decimal("1"),
+    )
+    engine.submit_order(first)
+    conflicting = Order(
+        order_id="idem-b", client_order_id="same-client-id", trader_id="t1",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("51"), quantity=Decimal("1"),
+    )
+
+    result, trades, decision = engine.submit_order(conflicting)
+    assert result.status == OrderStatus.REJECTED
+    assert trades == []
+    assert decision.code == "CLIENT_ORDER_ID_CONFLICT"
+    assert engine.book.get_best_bid() == Decimal("50")
+
+
+def test_market_order_notional_sums_executable_book_depth():
+    engine = MatchingEngine("BTC-USDT")
+    for order_id, price, quantity in (
+        ("market-maker-a", Decimal("100"), Decimal("5000")),
+        ("market-maker-b", Decimal("110"), Decimal("5000")),
+    ):
+        engine.submit_order(Order(
+            order_id=order_id, client_order_id=f"{order_id}-client", trader_id="maker",
+            symbol="BTC-USDT", side=Side.SELL, order_type=OrderType.LIMIT,
+            price=price, quantity=quantity,
+        ))
+    oversized = Order(
+        order_id="large-market", client_order_id="large-market-client", trader_id="taker",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.MARKET,
+        price=Decimal("0"), quantity=Decimal("10000"),
+    )
+
+    result, trades, decision = engine.submit_order(oversized)
+    assert result.status == OrderStatus.REJECTED
+    assert trades == []
+    assert decision.code == "MAX_NOTIONAL_BREACH"
+    assert engine.book.get_best_ask() == Decimal("100")
+
+
+def test_market_order_without_reference_liquidity_is_rejected():
+    engine = MatchingEngine("BTC-USDT")
+    order = Order(
+        order_id="market-empty", client_order_id="market-empty-client", trader_id="taker",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.MARKET,
+        price=Decimal("0"), quantity=Decimal("1"),
+    )
+    _, trades, decision = engine.submit_order(order)
+    assert trades == []
+    assert decision.code == "MARKET_REFERENCE_UNAVAILABLE"
+
+
+def test_engine_rejects_symbol_mismatch_and_duplicate_order_id():
+    engine = MatchingEngine("BTC-USDT")
+    wrong_symbol = Order(
+        order_id="shared-id", client_order_id="wrong-symbol-client", trader_id="t1",
+        symbol="ETH-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("50"), quantity=Decimal("1"),
+    )
+    _, _, symbol_decision = engine.submit_order(wrong_symbol)
+    assert symbol_decision.code == "SYMBOL_MISMATCH"
+
+    valid = Order(
+        order_id="shared-id", client_order_id="valid-client", trader_id="t1",
+        symbol="BTC-USDT", side=Side.BUY, order_type=OrderType.LIMIT,
+        price=Decimal("50"), quantity=Decimal("1"),
+    )
+    engine.submit_order(valid)
+    duplicate = Order(
+        order_id="shared-id", client_order_id="duplicate-client", trader_id="t2",
+        symbol="BTC-USDT", side=Side.SELL, order_type=OrderType.LIMIT,
+        price=Decimal("60"), quantity=Decimal("1"),
+    )
+    result, _, duplicate_decision = engine.submit_order(duplicate)
+    assert result.status == OrderStatus.REJECTED
+    assert duplicate_decision.code == "DUPLICATE_ORDER_ID"
+    assert engine.book.get_best_bid() == Decimal("50")
+
+
 def test_audit_ledger_cryptographic_chain():
     ledger = AuditLedger()
     ledger.record_event("ORDER_NEW", {"order_id": "1"}, sequence_num=1, timestamp_ns=1000)
@@ -319,3 +442,26 @@ def test_audit_ledger_cryptographic_chain():
     # Tamper with an entry payload to ensure tampering is detected
     ledger.entries[1].payload["trade_id"] = "tampered"
     assert not ledger.verify_chain_integrity()
+
+
+def test_audit_ledger_detects_timestamp_and_truncation_tampering():
+    ledger = AuditLedger()
+    ledger.record_event("ORDER_NEW", {"order_id": "1"}, sequence_num=1, timestamp_ns=1000)
+    ledger.record_event("ORDER_CANCEL", {"order_id": "1"}, sequence_num=2, timestamp_ns=1001)
+    ledger.entries[0].timestamp_ns += 1
+    assert not ledger.verify_chain_integrity()
+
+    intact = AuditLedger()
+    intact.record_event("ORDER_NEW", {"order_id": "1"}, sequence_num=1, timestamp_ns=1000)
+    intact.record_event("ORDER_CANCEL", {"order_id": "1"}, sequence_num=2, timestamp_ns=1001)
+    intact.entries.pop()
+    assert not intact.verify_chain_integrity()
+
+
+def test_audit_ledger_requires_strictly_increasing_sequences():
+    ledger = AuditLedger()
+    with pytest.raises(ValueError, match="positive integer"):
+        ledger.record_event("INVALID", {}, sequence_num=0, timestamp_ns=999)
+    ledger.record_event("ORDER_NEW", {}, sequence_num=3, timestamp_ns=1000)
+    with pytest.raises(ValueError, match="increase strictly"):
+        ledger.record_event("ORDER_CANCEL", {}, sequence_num=3, timestamp_ns=1001)

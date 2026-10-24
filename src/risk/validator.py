@@ -20,6 +20,9 @@ class BookBBOProvider(Protocol):
     def get_best_ask_trader(self, symbol: str) -> Optional[str]:
         ...
 
+    def estimate_market_notional(self, side: Side, quantity: Decimal) -> Decimal:
+        ...
+
 
 class PreTradeRiskEngine:
     """Pre-trade risk gateway enforcing institutional safety boundaries."""
@@ -36,15 +39,17 @@ class PreTradeRiskEngine:
 
     def validate_order(self, order: Order, bbo_provider: BookBBOProvider) -> RiskDecision:
         """Evaluate pre-trade risk rules against order parameters and current book state."""
-        # 1. Basic sanity: Price and Quantity must be positive
-        if order.quantity <= Decimal("0"):
+        # 1. Basic sanity: reject non-finite Decimals as well as non-positive values.
+        if not order.quantity.is_finite() or order.quantity <= Decimal("0"):
             return RiskDecision(
                 allowed=False,
                 code="INVALID_QUANTITY",
                 reason=f"Order quantity must be strictly positive (got {order.quantity})",
             )
 
-        if order.order_type != OrderType.MARKET and order.price <= Decimal("0"):
+        if not order.price.is_finite() or (
+            order.order_type != OrderType.MARKET and order.price <= Decimal("0")
+        ):
             return RiskDecision(
                 allowed=False,
                 code="INVALID_PRICE",
@@ -53,6 +58,14 @@ class PreTradeRiskEngine:
 
         # 2. Maximum single-order notional check
         notional = order.price * order.quantity
+        if order.order_type == OrderType.MARKET:
+            notional = bbo_provider.estimate_market_notional(order.side, order.quantity)
+            if notional == Decimal("0"):
+                return RiskDecision(
+                    allowed=False,
+                    code="MARKET_REFERENCE_UNAVAILABLE",
+                    reason="Cannot apply the notional limit without opposing book liquidity",
+                )
         if notional > self.max_notional:
             return RiskDecision(
                 allowed=False,

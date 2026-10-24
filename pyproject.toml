@@ -9,7 +9,7 @@ description = "High-throughput limit order book matching and pre-trade risk engi
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Paul Trafford", email = "228485553+elura172@users.noreply.github.com" }
+    { name = "elura172", email = "228485553+elura172@users.noreply.github.com" }
 ]
 dependencies = [
     "pydantic>=2.0.0",

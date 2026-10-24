@@ -18,7 +18,7 @@ def render_banner() -> None:
         Panel(
             "[bold white]HIGH-THROUGHPUT ORDER MATCHING & PRE-TRADE RISK ENGINE[/bold white]\n"
             "[cyan]L3 Price-Time Priority · Continuous Double Auction · Fat-Finger Collars · STP[/cyan]\n"
-            "[green]Author: Paul Trafford (@elura172) · Hong Kong & Tokyo Quant/FinTech Pipeline[/green]",
+            "[green]Author: elura172 (@elura172) · Hong Kong & Tokyo Quant/FinTech Pipeline[/green]",
             border_style="bright_blue",
             expand=False,
         )

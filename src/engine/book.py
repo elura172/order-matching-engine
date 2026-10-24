@@ -48,7 +48,7 @@ class LimitOrderBook:
     def get_order(self, order_id: str) -> Optional[Order]:
         return self._orders.get(order_id)
 
-    def add_resting_order(self, order: Order) -> None:
+    def add_resting_order(self, order: Order, priority_index: Optional[int] = None) -> None:
         """Add an unfilled or partially filled limit order to rest on the book."""
         if order.remaining_qty <= Decimal("0"):
             return
@@ -70,7 +70,39 @@ class LimitOrderBook:
                 # Maintain ascending order for asks
                 bisect.insort_left(self._ask_prices, price)
 
-        self._levels[side][price].append(order)
+        level = self._levels[side][price]
+        if priority_index is None:
+            level.append(order)
+        else:
+            level.insert(priority_index, order)
+
+    def get_order_priority(self, order_id: str) -> Optional[int]:
+        """Return an order's FIFO position within its price level, if it is resting."""
+        order = self._orders.get(order_id)
+        if order is None:
+            return None
+        level = self._levels[order.side].get(order.price)
+        if level is None:
+            return None
+        try:
+            return next(index for index, resting in enumerate(level) if resting.order_id == order_id)
+        except StopIteration:
+            return None
+
+    def estimate_market_notional(self, side: Side, quantity: Decimal) -> Decimal:
+        """Return the notional that a market order can execute against current depth."""
+        opposite = Side.SELL if side == Side.BUY else Side.BUY
+        prices = self._ask_prices if side == Side.BUY else self._bid_prices
+        remaining = quantity
+        notional = Decimal("0")
+        for price in prices:
+            for resting in self._levels[opposite][price]:
+                fill_qty = min(remaining, resting.remaining_qty)
+                notional += price * fill_qty
+                remaining -= fill_qty
+                if remaining <= 0:
+                    return notional
+        return notional
 
     def cancel_order(self, order_id: str) -> Optional[Order]:
         """Cancel a resting order from the book."""

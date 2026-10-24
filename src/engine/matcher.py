@@ -23,6 +23,20 @@ class MatchingEngine:
         self.sequence_num: int = 0
         self.trades: list[Trade] = []
         self._processed_client_orders: dict[str, tuple[Order, list[Trade], RiskDecision]] = {}
+        self._client_order_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._seen_order_ids: set[str] = set()
+
+    @staticmethod
+    def _order_fingerprint(order: Order) -> tuple[object, ...]:
+        return (
+            order.order_id,
+            order.trader_id,
+            order.symbol,
+            order.side,
+            order.order_type,
+            order.price,
+            order.quantity,
+        )
 
     def _next_seq(self) -> int:
         self.sequence_num += 1
@@ -32,7 +46,47 @@ class MatchingEngine:
         """Intake, validate, cross, and settle an incoming order against the book."""
         # 1. Idempotency check on client_order_id
         if order.client_order_id in self._processed_client_orders:
-            return self._processed_client_orders[order.client_order_id]
+            if self._client_order_fingerprints[order.client_order_id] == self._order_fingerprint(order):
+                return self._processed_client_orders[order.client_order_id]
+            order.status = OrderStatus.REJECTED
+            return (
+                order,
+                [],
+                RiskDecision(
+                    allowed=False,
+                    code="CLIENT_ORDER_ID_CONFLICT",
+                    reason=f"Client order ID '{order.client_order_id}' was already used for a different order",
+                ),
+            )
+
+        self._client_order_fingerprints[order.client_order_id] = self._order_fingerprint(order)
+        if order.symbol != self.symbol:
+            order.status = OrderStatus.REJECTED
+            result = (
+                order,
+                [],
+                RiskDecision(
+                    allowed=False,
+                    code="SYMBOL_MISMATCH",
+                    reason=f"Order symbol '{order.symbol}' does not match engine symbol '{self.symbol}'",
+                ),
+            )
+            self._processed_client_orders[order.client_order_id] = result
+            return result
+        if order.order_id in self._seen_order_ids:
+            order.status = OrderStatus.REJECTED
+            result = (
+                order,
+                [],
+                RiskDecision(
+                    allowed=False,
+                    code="DUPLICATE_ORDER_ID",
+                    reason=f"Order ID '{order.order_id}' has already been used",
+                ),
+            )
+            self._processed_client_orders[order.client_order_id] = result
+            return result
+        self._seen_order_ids.add(order.order_id)
 
         if order.timestamp_ns == 0:
             order.timestamp_ns = time.time_ns()
@@ -192,6 +246,7 @@ class MatchingEngine:
         new_client_order_id: Optional[str] = None,
     ) -> tuple[Optional[Order], Optional[Order], list[Trade], RiskDecision]:
         """Atomically cancel a resting order and submit a replacement order."""
+        priority_index = self.book.get_order_priority(order_id)
         cancelled = self.cancel_order(order_id)
         if cancelled is None:
             return (
@@ -213,4 +268,7 @@ class MatchingEngine:
         )
 
         res_order, trades, decision = self.submit_order(replacement_order)
+        if not decision.allowed:
+            # A rejected replace must leave the original order active with its original FIFO priority.
+            self.book.add_resting_order(cancelled, priority_index=priority_index)
         return (cancelled, res_order, trades, decision)
